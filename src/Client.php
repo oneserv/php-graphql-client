@@ -6,7 +6,6 @@ use GraphQL\Exception\QueryError;
 use GraphQL\QueryBuilder\QueryBuilderInterface;
 use GraphQL\Util\GuzzleAdapter;
 use GuzzleHttp\Exception\ClientException;
-use GuzzleHttp\Psr7;
 use GuzzleHttp\Psr7\Request;
 use Psr\Http\Client\ClientInterface;
 use TypeError;
@@ -44,7 +43,7 @@ class Client
      * @param string $endpointUrl
      * @param array $authorizationHeaders
      * @param array $httpOptions
-     * @param ClientInterface $httpClient
+     * @param ClientInterface|null $httpClient
      * @param string $requestMethod
      */
     public function __construct(
@@ -53,7 +52,8 @@ class Client
         array $httpOptions = [],
         ClientInterface $httpClient = null,
         string $requestMethod = 'POST'
-    ) {
+    )
+    {
         $headers = array_merge(
             $authorizationHeaders,
             $httpOptions['headers'] ?? [],
@@ -67,16 +67,16 @@ class Client
          */
         unset($httpOptions['headers']);
 
-        $this->endpointUrl          = $endpointUrl;
-        $this->httpClient           = $httpClient ?? new GuzzleAdapter(new \GuzzleHttp\Client($httpOptions));
-        $this->httpHeaders          = $headers;
-        $this->requestMethod        = $requestMethod;
+        $this->endpointUrl = $endpointUrl;
+        $this->httpClient = $httpClient ?? new GuzzleAdapter(new \GuzzleHttp\Client($httpOptions));
+        $this->httpHeaders = $headers;
+        $this->requestMethod = $requestMethod;
     }
 
     /**
      * @param Query|QueryBuilderInterface $query
-     * @param bool                        $resultsAsArray
-     * @param array                       $variables
+     * @param bool $resultsAsArray
+     * @param array $variables
      *
      * @return Results
      * @throws QueryError
@@ -91,13 +91,13 @@ class Client
             throw new TypeError('Client::runQuery accepts the first argument of type Query or QueryBuilderInterface');
         }
 
-        return $this->runRawQuery((string) $query, $resultsAsArray, $variables);
+        return $this->runRawQuery((string)$query, $resultsAsArray, $variables);
     }
 
     /**
      * @param string $queryString
-     * @param bool   $resultsAsArray
-     * @param array  $variables
+     * @param bool $resultsAsArray
+     * @param array $variables
      * @param
      *
      * @return Results
@@ -105,23 +105,32 @@ class Client
      */
     public function runRawQuery(string $queryString, $resultsAsArray = false, array $variables = []): Results
     {
-        $request = new Request($this->requestMethod, $this->endpointUrl);
 
-        foreach($this->httpHeaders as $header => $value) {
-            $request = $request->withHeader($header, $value);
+        if ($this->requestMethod === 'GET') {
+            $urlVariables = http_build_query($variables);
+
+            $urlAppendix = "query=$queryString&variables=$urlVariables";
+
+            if (parse_url($this->endpointUrl, PHP_URL_QUERY)) {
+                $urlAppendix = "&$urlAppendix";
+            } else {
+                $urlAppendix = "?$urlAppendix";
+            }
+
+            $request = new Request($this->requestMethod, $this->endpointUrl . $urlAppendix, $this->httpHeaders);
+        } else {
+            // Convert empty variables array to empty json object
+            if (empty($variables)) $variables = (object)null;
+            // Set query in the request body
+            $bodyArray = ['query' => $queryString, 'variables' => $variables];
+
+            $request = new Request($this->requestMethod, $this->endpointUrl, $this->httpHeaders, json_encode($bodyArray));
         }
-
-        // Convert empty variables array to empty json object
-        if (empty($variables)) $variables = (object) null;
-        // Set query in the request body
-        $bodyArray = ['query' => (string) $queryString, 'variables' => $variables];
-        $request = $request->withBody(Psr7\stream_for(json_encode($bodyArray)));
 
         // Send api request and get response
         try {
             $response = $this->httpClient->sendRequest($request);
-        }
-        catch (ClientException $exception) {
+        } catch (ClientException $exception) {
             $response = $exception->getResponse();
 
             // If exception thrown by client is "400 Bad Request ", then it can be treated as a successful API request
